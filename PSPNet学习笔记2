@@ -1,0 +1,78 @@
+1、from keras.callbacks import ReduceLROnPlateau，用来调整学习率。
+
+reduce_lr = ReduceLROnPlateau(monitor=‘val_loss’, factor=0.5, patience=2, verbose=1)
+
+monitor：监测的值，可以是accuracy，val_loss,val_accuracy
+factor：缩放学习率的值，学习率将以lr = lr * factor的形式被减少
+patience：当patience个epoch过去而模型性能不提升时，学习率减少的动作会被触发
+mode：‘auto’，‘min’，‘max’之一 默认‘auto’就行
+epsilon：阈值，用来确定是否进入检测值的“平原区”
+cooldown：学习率减少后，会经过cooldown个epoch才重新进行正常操作
+min_lr：学习率最小值，能缩小到的下限
+verbose: 详细信息模式，0 或者 1 
+
+
+2、dice loss来自文章VNet(V-Net: Fully Convolutional Neural Networks for Volumetric Medical Image Segmentation)，旨在应对语义分割中正负样本强烈不平衡的场景。dice loss 来自 dice coefficient，是一种用于评估两个样本的相似性的度量函数，取值范围在0到1之间，取值越大表示越相似。
+
+
+3、o = Conv2D(n_classes, (1, 1), kernel_initializer=random_normal(stddev=0.02),
+               padding='same')(o)                    # (None, 30, 30, 21)
+   o = Lambda(resize_images)([o, img_input])        # (None, 473, 473, 21)
+
+
+哇哇哇，突然觉得这里的resize是不是太粗糙了？！！！，居然直接放大了16倍，这也太不精密了？！！
+但转身仔细想想，本来在语义分割里面，需要分类的区域也常常是一大块一大块的，不可能经常出现像素点之间散乱分布，本来就是一大片区域一大片区域聚集的，因此粗糙点应该也不影响效果。
+
+
+4、我发现loss损失函数里的一个细节：
+
+计算CE loss时，对于真实观测值为背景信息的情况，loss函数并未包含处理。
+
+草，原来CE loss就是交叉熵损失......那特么的这里还不如用系统自带函数......
+
+
+5、我想到了一个很严重的问题，语义分割的标注图片label，我resize时该怎么处理？？？
+
+可以直接resize吗？不用专门做一些变换吗？？？
+
+似乎可以，因为像素信息本来就是一个区域一个区域的，所以像素填充的时候应该也不会出太大的问题，我们再将矩阵元素int转整即可！！！
+
+果然是可以的！！！细微像素点resize错误，并不会影响到什么，效果可以直接使用！！！！！！
+
+我有个疑问？？？resize出来的图片像素，是不是只会是整数？？？
+
+
+
+6、我发现代码的一个bug。貌似语义分割的标注文件，只能用Image库来读取，如果用opencv来读取，就变成一个三通道的矩阵了？？？像素标注信息没了？？？
+
+我实验了一下，的确利用Image.open函数直接能把.png文件读出标注信息，但令我比较迷惑的是，有的像素标记为0，有的标记为1-20，有的标记为255，标注代表的含义到底是什么呢？？？
+
+貌似这里255代表的含义，是目标物体边缘轮廓信息，数据集标注者特意用了另一个像素区分对待！
+
+
+7、卧槽，这行代码好强，简简单单两句话，直接把一个两重循环的数据标注给处理好了！
+
+seg_labels = np.eye(self.num_classes+1)[png.reshape([-1])]
+            seg_labels = seg_labels.reshape((int(self.image_size[0]), int(self.image_size[1]), self.num_classes+1))
+
+
+我终于直到为什么要重构loss损失函数了，而且还有特意忽略到最后一个类别的信息。因为最后那个类别对应的是255像素，标记的是轮廓信息。其实我们在代码处理中，干脆将它们标记为背景信息即可。
+
+另外我写代码赋值时，不要再使用两重for循环了，直接调用eye函数，简单又快速！！！
+
+
+8、又读懂了一些很深刻的东西：
+
+（1）VOC2007数据集中语义分割图片，必须要用Image函数才能读取到标记类别，此时读取的像素值正好是0、1、2、...这种类型，而如果用opencv读取，就会完全失去像素点类别标记信息。
+
+（2）VOC2007数据集中语义分割图片，总共记录了20类，但却有22类像素值。1-20标记的是不同目标物体类别，0标记的是背景信息，255标记的是轮廓信息。
+
+我发现轮廓信息真的最好忽略掉，不然突兀的出现，可能会对网络学习产生很大影响？？？
+
+
+（3）我终于明白语义分割label信息可以resize的原因了：普通的线性插值、样条插值的确会破坏原始像素点标记信息，从而产生新的类别元素。但如果把插值方法设置为cv2.INTER_NEAREST，按照最邻近的位置记录新的像素信息，就正好完美解决了这个问题。
+
+借助此种方法，语义分割数据集就可以随时做变形，做resize了！！！！
+
+
+9、我得查一下mobileNet v2的网络结构，源码各种网络层尺寸缩放好复杂...
