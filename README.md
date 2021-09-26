@@ -3,7 +3,9 @@
 # 环境配置
 
 python == 3.8
+
 tensorflow == 2.4.1
+
 keras == 2.4.3
 
 如果想切换到1.6.0的tensoflow版本，匹配python==3.6，需要在代码这个tf命令中进行修改：
